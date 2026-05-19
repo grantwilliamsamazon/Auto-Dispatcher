@@ -1,0 +1,7 @@
+streamlit
+pandas
+supabase
+google-generativeai
+pymupdf
+openpyxl
+pillow
