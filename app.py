@@ -580,8 +580,53 @@ if st.button("Run Auto-Assign Algorithm"):
 # 5. Review & Edit
 if "assignments" in st.session_state:
     st.subheader("Review & Manual Override")
+    
+    df_assign = st.session_state["assignments"].copy()
+    
+    with st.expander("🔄 Quick Swap / Reassign Vans", expanded=False):
+        st.write("Use this tool to safely move a driver to a different van or swap two vans without losing route data.")
+        qs_col1, qs_col2, qs_col3 = st.columns([2, 2, 1])
+        
+        # Unique valid drivers
+        valid_drivers = sorted(df_assign[df_assign['driver'].str.strip().astype(bool)]['driver'].unique())
+        
+        with qs_col1:
+            driver_to_move = st.selectbox("Select Driver to Move", options=valid_drivers, key="qs_driver")
+            
+        with qs_col2:
+            # All possible vans 1-45
+            all_vans_str = [str(i) for i in range(1, 46)]
+            target_van = st.selectbox("Select Target Van", options=all_vans_str, key="qs_van")
+            
+        with qs_col3:
+            st.write("") # spacing
+            st.write("")
+            if st.button("Swap / Move Van"):
+                if driver_to_move:
+                    driver_idx = df_assign[df_assign['driver'] == driver_to_move].index[0]
+                    current_van = str(df_assign.at[driver_idx, 'van']).strip()
+                    
+                    if current_van != target_van:
+                        occupied_idx = df_assign[df_assign['van'].astype(str).str.strip() == target_van].index
+                        
+                        if not occupied_idx.empty:
+                            # Swap with the first occupant found
+                            df_assign.at[driver_idx, 'van'] = target_van
+                            df_assign.at[occupied_idx[0], 'van'] = current_van
+                            st.success(f"Swapped Vans: {driver_to_move} is now in {target_van}. Previous occupant moved to {current_van}.")
+                        else:
+                            # Just move
+                            df_assign.at[driver_idx, 'van'] = target_van
+                            st.success(f"Moved {driver_to_move} to Van {target_van}.")
+                            
+                        st.session_state["assignments"] = df_assign
+                        st.rerun()
+                    else:
+                        st.info("Driver is already in that van.")
+
     col_order = ["route_count", "route_id", "van", "driver", "lane", "wave_time", "packages", "bags", "overflow"]
     edited_df = st.data_editor(st.session_state["assignments"], num_rows="dynamic", use_container_width=True, column_order=col_order)
+    st.session_state["assignments"] = edited_df
     
     st.subheader("Whiteboard Export")
     st.write("Highlight and copy the table below to paste directly into your digital whiteboard! It is sorted by Van 1-45.")
