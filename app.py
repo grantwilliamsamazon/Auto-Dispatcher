@@ -11,6 +11,34 @@ import os
 # --- Configuration & Setup ---
 st.set_page_config(page_title="DSP Auto-Dispatch Engine", page_icon="🚐", layout="wide")
 
+st.markdown("""
+<style>
+    /* Hide Streamlit default branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* Expanders & Cards */
+    .streamlit-expanderHeader {
+        font-weight: 600;
+    }
+    
+    /* Buttons */
+    .stButton>button {
+        background-color: #3b82f6;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 10px 24px;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
+    .stButton>button:hover {
+        background-color: #2563eb;
+        color: white;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 GEMINI_API_KEY = init_gemini()
 supabase = init_supabase()
 
@@ -99,12 +127,24 @@ def extract_pdf_data(route_sheet_pdf, cortex_excel):
         
     df_pdf = pd.DataFrame(pdf_data)
     
+    # Group by route_id so multi-page routes have a list of pages, ensuring 1 row per route
+    if not df_pdf.empty:
+        df_pdf = df_pdf.groupby('route_id').agg({
+            'packages': 'max',
+            'bags': 'max',
+            'overflow': 'max',
+            'wave_time': 'first',
+            'page_num': lambda x: list(x)
+        }).reset_index()
+    
     # Reset file pointer for later use (like stamping)
     route_sheet_pdf.seek(0)
     
     # 3. Merge Data
     if not df_pdf.empty:
         df_merged = pd.merge(df_pdf, df_excel, on="route_id", how="left")
+        # clean up exact duplicate rows from Excel, ignoring the unhashable page_num list
+        df_merged = df_merged.drop_duplicates(subset=[c for c in df_merged.columns if c != 'page_num'])
         # Fill missing drivers with empty string
         df_merged['driver'] = df_merged['driver'].fillna('')
         
@@ -203,7 +243,6 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
             return 999
     available_vans.sort(key=get_van_sort_key)
     
-    # Phase 0: Sort by Wave Time chronologically
     def parse_time(time_str):
         try:
             return pd.to_datetime(time_str, format='%I:%M %p').time()
@@ -222,15 +261,45 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     island_routes = tags.get("island", [])
     rural_routes = tags.get("rural", [])
     
-    # Create driver restriction lookup
-    driver_dict = {d['driver_name']: d.get('vehicle_restriction', None) for d in drivers}
-    driver_safe = {d['driver_name']: d.get('is_safe', False) for d in drivers}
+    def normalize_name(name):
+        return " ".join(str(name).lower().replace("-", " ").strip().split())
+
+    def get_driver_match(excel_driver_name):
+        excel_norm = normalize_name(excel_driver_name)
+        excel_tokens = set(excel_norm.split())
+        
+        # 1. Exact match (normalized)
+        for d in drivers:
+            db_norm = normalize_name(d['driver_name'])
+            if db_norm == excel_norm:
+                return d
+                
+        # 2. Fuzzy match (handle Jaquez- cody e -> cody eagle)
+        import difflib
+        db_names = [normalize_name(d['driver_name']) for d in drivers]
+        matches = difflib.get_close_matches(excel_norm, db_names, n=1, cutoff=0.5)
+        if matches:
+            match_name = matches[0]
+            for d in drivers:
+                if normalize_name(d['driver_name']) == match_name:
+                    return d
+                    
+        # 3. Partial substring match as fallback
+        for d in drivers:
+            db_norm = normalize_name(d['driver_name'])
+            if db_norm and (db_norm in excel_norm or excel_norm in db_norm):
+                return d
+                
+        return None
     
-    def pop_best_van(req_func, driver):
+    def pop_best_van(req_func, driver, prefer_func=None):
         unassigned_count = len(df[df["van"] == ""])
         buffer_count = len(available_vans) - unassigned_count
         
-        restriction = driver_dict.get(driver)
+        driver_record = get_driver_match(driver)
+        restriction = driver_record.get('vehicle_restriction', None) if driver_record else None
+        is_safe = driver_record.get('is_safe', False) if driver_record else False
+        
         def passes_restriction(v):
             if not restriction or str(restriction).strip() == "":
                 return True
@@ -240,67 +309,98 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 return make != res_str[3:].strip()
             return make == res_str
 
-        # First pass: try to respect no_camera buffer AND driver restriction
-        for i, v in enumerate(available_vans):
-            if req_func and not req_func(v): continue
-            if not passes_restriction(v): continue
-            
-            v_tags = v.get("tags", [])
-            if "new_van" in v_tags and not driver_safe.get(driver, False): continue
-            if "no_camera" in v_tags and buffer_count > 0:
+        # Helper to search vans
+        def search_vans(enforce_buffer, enforce_prefer):
+            for i, v in enumerate(available_vans):
+                if req_func and not req_func(v): continue
+                if enforce_prefer and prefer_func and not prefer_func(v): continue
+                if not passes_restriction(v): continue
+                
+                v_tags = v.get("tags", [])
+                if "new_van" in v_tags and not is_safe: continue
+                if enforce_buffer and "no_camera" in v_tags and buffer_count > 0:
+                    continue
+                return i
+            return -1
+
+        # Pass 1: Strict (buffer + preference)
+        idx = search_vans(enforce_buffer=True, enforce_prefer=True)
+        if idx != -1:
+            if "no_camera" in available_vans[idx].get("tags", []):
                 buffer_count -= 1
-                continue
-            return available_vans.pop(i)
+            return available_vans.pop(idx)
             
-        # Second pass: ignore buffer, but strictly enforce safe driver AND driver restriction
+        # Pass 2: Drop preference, keep buffer
+        if prefer_func:
+            idx = search_vans(enforce_buffer=True, enforce_prefer=False)
+            if idx != -1:
+                if "no_camera" in available_vans[idx].get("tags", []):
+                    buffer_count -= 1
+                return available_vans.pop(idx)
+                
+        # Pass 3: Drop buffer, keep preference
+        idx = search_vans(enforce_buffer=False, enforce_prefer=True)
+        if idx != -1: return available_vans.pop(idx)
+        
+        # Pass 4: Drop buffer and preference
+        idx = search_vans(enforce_buffer=False, enforce_prefer=False)
+        if idx != -1: return available_vans.pop(idx)
+        
+        # Third pass fallback: Drop req_func (like Heavy route requirement) but KEEP driver restriction!
+        # This prevents a 'No ford' driver from being forced into a Ford just because it's a Heavy route.
         for i, v in enumerate(available_vans):
-            if req_func and not req_func(v): continue
             if not passes_restriction(v): continue
-            
             v_tags = v.get("tags", [])
-            if "new_van" in v_tags and not driver_safe.get(driver, False): continue
+            if "new_van" in v_tags and not is_safe: continue
             return available_vans.pop(i)
             
-        # Third pass: ignore driver vehicle restriction if we absolutely have to, 
-        # just to get them a van (still strictly enforcing safety and req_func!)
+        # Fourth pass fallback: The absolute last resort, drop driver restrictions.
         for i, v in enumerate(available_vans):
-            if req_func and not req_func(v): continue
             v_tags = v.get("tags", [])
-            if "new_van" in v_tags and not driver_safe.get(driver, False): continue
+            if "new_van" in v_tags and not is_safe: continue
             return available_vans.pop(i)
             
         return None
 
-    # Phase 1: Hard Constraints
-    # 1. Island Routes
-    for idx, row in df[df['route_id'].isin(island_routes)].iterrows():
-        driver = row['driver']
-        van = pop_best_van(lambda v: "island_pass" in v.get("tags", []), driver)
-        if van: df.at[idx, "van"] = van["van_number"]
+    # Pre-calculate heavy routes globally
+    large_van_count = sum(1 for v in available_vans if v.get("size_class") == "Large")
+    df_sorted_vol = df.sort_values(by=["overflow", "packages"], ascending=[False, False])
+    heavy_routes = df_sorted_vol['route_id'].head(large_van_count).tolist()
+
+    # Process wave by wave to maintain contiguous van assignments
+    unique_waves = sorted(df['parsed_time'].unique())
+    
+    for wave in unique_waves:
+        # 1. Island Routes in this wave
+        for idx, row in df[(df['parsed_time'] == wave) & (df['route_id'].isin(island_routes)) & (df["van"] == "")].iterrows():
+            van = pop_best_van(lambda v: "island_pass" in v.get("tags", []), row['driver'])
+            if van: df.at[idx, "van"] = van["van_number"]
+                    
+        # 2. Rural/Dirt Routes in this wave
+        for idx, row in df[(df['parsed_time'] == wave) & (df['route_id'].isin(rural_routes)) & (df["van"] == "")].iterrows():
+            # Exclude RWD -> Require FWD or AWD, but PREFER Standard to save Large vans for Heavy routes
+            van = pop_best_van(
+                req_func=lambda v: v.get("drive_train") in ['FWD', 'AWD'], 
+                driver=row['driver'],
+                prefer_func=lambda v: v.get("size_class") == "Standard"
+            )
+            if van: df.at[idx, "van"] = van["van_number"]
                 
-    # 2. Rural/Dirt Routes
-    for idx, row in df[(df["van"] == "") & (df['route_id'].isin(rural_routes))].iterrows():
-        driver = row['driver']
-        # Exclude RWD -> Require FWD or AWD (Strictly no Mercedes on dirt)
-        van = pop_best_van(lambda v: v.get("drive_train") in ['FWD', 'AWD'], driver)
-        if van: df.at[idx, "van"] = van["van_number"]
+        # 3. Heavy Routes in this wave
+        for idx, row in df[(df['parsed_time'] == wave) & (df['route_id'].isin(heavy_routes)) & (df["van"] == "")].iterrows():
+            van = pop_best_van(lambda v: v.get("size_class") == 'Large', row['driver'])
+            if van: df.at[idx, "van"] = van["van_number"]
+                
+        # 4. The Leftovers in this wave
+        for idx, row in df[(df['parsed_time'] == wave) & (df["van"] == "")].iterrows():
+            # Prefer Standard to avoid eating up Large vans
+            van = pop_best_van(
+                req_func=lambda v: True, 
+                driver=row['driver'],
+                prefer_func=lambda v: v.get("size_class") == "Standard"
+            )
+            if van: df.at[idx, "van"] = van["van_number"]
             
-    # Phase 2: Volume Constraints
-    # 4. Heavy Routes -> Assign Large Vans
-    unassigned = df[df["van"] == ""].sort_values(by=["overflow", "packages"], ascending=[False, False])
-    for idx, row in unassigned.iterrows():
-        driver = row['driver']
-        van = pop_best_van(lambda v: v.get("size_class") == 'Large', driver)
-        if van: df.at[idx, "van"] = van["van_number"]
-            
-    # 5. The Leftovers
-    # Iterate in the original chronologically sorted order
-    unassigned = df[df["van"] == ""]
-    for idx, row in unassigned.iterrows():
-        driver = row['driver']
-        van = pop_best_van(lambda v: True, driver)
-        if van: df.at[idx, "van"] = van["van_number"]
-        
     df = df.drop(columns=['parsed_time'])
             
     # Phase 3: Immutable Wave & Lane Parking
@@ -347,16 +447,12 @@ def generate_stamped_pdf(pdf_file, assignments_df, sort_by_wave=False):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         for idx, row in assignments_df.iterrows():
-            page_num = row.get("page_num", -1)
-            if pd.isna(page_num): continue
-            page_num = int(page_num)
-            
-            if page_num < 0 or page_num >= len(doc):
-                continue
+            pages = row.get("page_num", [])
+            if not isinstance(pages, list):
+                if pd.isna(pages): continue
+                pages = [int(pages)]
                 
-            page = doc[page_num]
             route_id = str(row.get("route_id", ""))
-            
             driver = str(row.get("driver", "UNASSIGNED"))
             if driver == "nan" or driver.strip() == "": driver = "UNASSIGNED"
             
@@ -366,30 +462,37 @@ def generate_stamped_pdf(pdf_file, assignments_df, sort_by_wave=False):
             lane = str(row.get("lane", "UNASSIGNED"))
             if lane == "nan" or lane.strip() == "": lane = "UNASSIGNED"
             
-            # Find the route ID text to anchor our Y-coordinate
-            rects = page.search_for(route_id)
-            if rects:
-                # Use the first occurrence of the Route ID, add ~20 points for padding below it
-                base_y = rects[0].y1 + 10 
-            else:
-                base_y = 150 # Fallback Y coordinate if search fails
+            for p in pages:
+                page_num = int(p)
+                if page_num < 0 or page_num >= len(doc):
+                    continue
+                    
+                page = doc[page_num]
                 
-            # Define exact regions based on user's image request
-            # Red color (1, 0, 0), fontsize 20
-            text_color = (1, 0, 0)
-            font_size = 20
-            
-            # 1. Driver Name (Left aligned)
-            name_rect = fitz.Rect(50, base_y, 250, base_y + 40)
-            page.insert_textbox(name_rect, driver, fontsize=font_size, color=text_color, fontname="helv")
-            
-            # 2. Van # (Center aligned)
-            van_rect = fitz.Rect(260, base_y, 400, base_y + 40)
-            page.insert_textbox(van_rect, f"Van: {van}", fontsize=font_size, color=text_color, fontname="helv")
-            
-            # 3. Lane (Right aligned)
-            lane_rect = fitz.Rect(410, base_y, 580, base_y + 40)
-            page.insert_textbox(lane_rect, f"Lane: {lane}", fontsize=font_size, color=text_color, fontname="helv")
+                # Find the route ID text to anchor our Y-coordinate
+                rects = page.search_for(route_id)
+                if rects:
+                    # Use the first occurrence of the Route ID, add ~20 points for padding below it
+                    base_y = rects[0].y1 + 10 
+                else:
+                    base_y = 150 # Fallback Y coordinate if search fails
+                    
+                # Define exact regions based on user's image request
+                # Red color (1, 0, 0), fontsize 20
+                text_color = (1, 0, 0)
+                font_size = 20
+                
+                # 1. Driver Name (Left aligned)
+                name_rect = fitz.Rect(50, base_y, 250, base_y + 40)
+                page.insert_textbox(name_rect, driver, fontsize=font_size, color=text_color, fontname="helv")
+                
+                # 2. Van # (Center aligned)
+                van_rect = fitz.Rect(260, base_y, 400, base_y + 40)
+                page.insert_textbox(van_rect, f"Van: {van}", fontsize=font_size, color=text_color, fontname="helv")
+                
+                # 3. Lane (Right aligned)
+                lane_rect = fitz.Rect(410, base_y, 580, base_y + 40)
+                page.insert_textbox(lane_rect, f"Lane: {lane}", fontsize=font_size, color=text_color, fontname="helv")
             
         if sort_by_wave:
             def get_time_val(time_str):
@@ -403,10 +506,16 @@ def generate_stamped_pdf(pdf_file, assignments_df, sort_by_wave=False):
             temp_df = temp_df.sort_values(by='time_val')
             
             pno_list = []
-            for p in temp_df['page_num']:
-                if not pd.isna(p) and int(p) >= 0 and int(p) < len(doc):
-                    pno_list.append(int(p))
-                    
+            for pages in temp_df['page_num']:
+                if not isinstance(pages, list):
+                    if not pd.isna(pages):
+                        pages = [pages]
+                    else:
+                        pages = []
+                for p in pages:
+                    if int(p) >= 0 and int(p) < len(doc):
+                        pno_list.append(int(p))
+                        
             # Add any extra pages (like cover sheets) that weren't in the assignments
             for i in range(len(doc)):
                 if i not in pno_list:
@@ -462,32 +571,37 @@ if roster_file and route_pdf:
                 st.text("If Overflow or Bags say 0, copy some of this text and send it to me so I can see how PyMuPDF reads your file:")
                 st.text(st.session_state["debug_pdf_text"])
 
+if st.session_state.get("show_conflict_success"):
+    st.success("✅ Conflicts resolved! You can now proceed to Route Tagging.")
+    st.session_state["show_conflict_success"] = False
+
 # Conflict Resolution UI
 if "driver_conflicts" in st.session_state:
     st.error("⚠️ Multiple drivers found for the same route.")
     st.write("Please select the correct driver for each conflicted route:")
     
-    resolved_drivers = {}
-    for r_id, drivers_list in st.session_state["driver_conflicts"].items():
-        # User must explicitly confirm even if one is empty
-        selected = st.selectbox(f"Select actual driver for Route **{r_id}**:", drivers_list, key=f"conflict_{r_id}")
-        resolved_drivers[r_id] = selected
-        
-    if st.button("Confirm Drivers"):
-        df = st.session_state["unresolved_routes_df"].copy()
-        
-        # Update driver name for conflicted routes
-        for route, resolved_driver in resolved_drivers.items():
-            df.loc[df['route_id'] == route, 'driver'] = resolved_driver
+    with st.form("conflict_resolution_form"):
+        resolved_drivers = {}
+        for r_id, drivers_list in st.session_state["driver_conflicts"].items():
+            # User must explicitly confirm even if one is empty
+            selected = st.selectbox(f"Select actual driver for Route **{r_id}**:", drivers_list, key=f"conflict_{r_id}")
+            resolved_drivers[r_id] = selected
             
-        # Deduplicate if there were multiple rows for the same route
-        filtered_df = df.drop_duplicates(subset=["route_id"]).copy()
-        
-        st.session_state["routes_df"] = filtered_df
-        del st.session_state["driver_conflicts"]
-        del st.session_state["unresolved_routes_df"]
-        st.success("Conflicts resolved! You can now proceed to tagging.")
-        st.rerun()
+        if st.form_submit_button("Confirm Drivers"):
+            df = st.session_state["unresolved_routes_df"].copy()
+            
+            # Update driver name for conflicted routes
+            for route, resolved_driver in resolved_drivers.items():
+                df.loc[df['route_id'] == route, 'driver'] = resolved_driver
+                
+            # Deduplicate just in case
+            filtered_df = df.drop_duplicates(subset=["route_id"]).copy()
+            
+            st.session_state["routes_df"] = filtered_df
+            del st.session_state["driver_conflicts"]
+            del st.session_state["unresolved_routes_df"]
+            st.session_state["show_conflict_success"] = True
+            st.rerun()
 
 # 2. AI Schedule Extraction & Lane Configuration
 st.header("2. Wave & Lane Configuration")
@@ -554,6 +668,38 @@ if st.button("Run Auto-Assign Algorithm"):
             st.error(f"Failed to fetch data from Supabase. Ensure tables are created and key is set in db.py. Error: {e}")
             available_vans = []
             drivers = []
+            
+        # Step 2.5: Auto-add new drivers
+        def normalize_name(name):
+            return " ".join(str(name).lower().replace("-", " ").strip().split())
+
+        def driver_exists(excel_driver_name):
+            excel_norm = normalize_name(excel_driver_name)
+            # Fuzzy match
+            db_names = [normalize_name(d['driver_name']) for d in drivers]
+            import difflib
+            matches = difflib.get_close_matches(excel_norm, db_names, n=1, cutoff=0.5)
+            if matches: return True
+            
+            # Substring Match Fallback
+            for db_name in db_names:
+                if db_name and (db_name in excel_norm or excel_norm in db_name): return True
+            return False
+
+        new_drivers_added = []
+        for excel_driver in routes_df['driver'].unique():
+            if not str(excel_driver).strip(): continue
+            if not driver_exists(excel_driver):
+                new_name = str(excel_driver).strip()
+                try:
+                    supabase.table('drivers').insert({'driver_name': new_name, 'vehicle_restriction': ''}).execute()
+                    drivers.append({'driver_name': new_name, 'vehicle_restriction': ''})
+                    new_drivers_added.append(new_name)
+                except Exception as e:
+                    st.error(f"Failed to add new driver {new_name}: {e}")
+                    
+        if new_drivers_added:
+            st.success(f"Automatically added {len(new_drivers_added)} new driver(s) to the database: {', '.join(new_drivers_added)}")
         
         # Step 3: Run algorithm
         tags = {"island": island_routes, "rural": rural_routes}
@@ -665,19 +811,19 @@ if "assignments" in st.session_state:
             bags_ct = assigned.iloc[0].get('bags', '')
             over_ct = assigned.iloc[0].get('overflow', '')
         else:
-            driver = cx = location = wave = lane = pkgs = bags_ct = over_ct = ""
+            driver = cx = location = wave = lane = pkgs = bags_ct = over_ct = "\xa0"
             
         wb_data.append({
-            "Name": driver,
-            "CX": cx,
-            "Location": location,
-            "Wave Times": wave,
-            "Lane": lane,
-            "Packages": pkgs,
-            "Bags": bags_ct,
-            "Overflow": over_ct,
-            "Returned": "",
-            "Fleet Note": status_note
+            "Name": driver if str(driver).strip() else "\xa0",
+            "CX": cx if str(cx).strip() else "\xa0",
+            "Location": location if str(location).strip() else "\xa0",
+            "Wave Times": wave if str(wave).strip() else "\xa0",
+            "Lane": lane if str(lane).strip() else "\xa0",
+            "Packages": pkgs if str(pkgs).strip() else "\xa0",
+            "Bags": bags_ct if str(bags_ct).strip() else "\xa0",
+            "Overflow": over_ct if str(over_ct).strip() else "\xa0",
+            "Returned": "\xa0",
+            "Fleet Note": status_note if status_note else "\xa0"
         })
         
     wb_df = pd.DataFrame(wb_data)
