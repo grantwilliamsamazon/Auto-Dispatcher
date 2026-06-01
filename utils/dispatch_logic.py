@@ -142,7 +142,23 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         return None
 
     # Pre-calculate heavy routes globally
-    large_van_count = sum(1 for v in available_vans if v.get("size_class") == "Large")
+    # Only force Heavy Routes if we actually plan to use Large vans (excluding bad ones if we have enough buffer)
+    def get_van_tier(v):
+        tags = v.get("tags", [])
+        if "new_van" in tags: return 2
+        if "no_camera" in tags: return 1
+        return 0
+        
+    def get_van_sort_key_for_count(v):
+        num = 999
+        try: num = int(v['van_number'])
+        except: pass
+        return (get_van_tier(v), num)
+        
+    sorted_vans_for_count = sorted(available_vans, key=get_van_sort_key_for_count)
+    vans_to_use = sorted_vans_for_count[:len(df)]
+    large_van_count = sum(1 for v in vans_to_use if v.get("size_class") == "Large")
+    
     df_sorted_vol = df.sort_values(by=["overflow", "packages"], ascending=[False, False])
     heavy_routes = df_sorted_vol['route_id'].head(large_van_count).tolist()
 
