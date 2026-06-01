@@ -12,3 +12,18 @@ def init_gemini():
     if api_key and api_key != "YOUR_GEMINI_KEY":
         os.environ["GEMINI_API_KEY"] = api_key
     return api_key
+
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+
+    if not st.session_state["authenticated"]:
+        st.title("🔒 Access Restricted")
+        passcode = st.text_input("Enter Passcode:", type="password")
+        if st.button("Submit"):
+            if passcode == "111020":
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect passcode.")
+        st.stop()

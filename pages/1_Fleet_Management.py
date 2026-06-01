@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
-from db import init_supabase
+from db import init_supabase, check_password
 
 st.set_page_config(page_title="Fleet Management Dashboard", page_icon="🚐", layout="wide")
+check_password()
 st.title("Fleet Management Dashboard")
 
 supabase = init_supabase()

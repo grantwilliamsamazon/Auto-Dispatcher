@@ -6,7 +6,6 @@ import fitz  # PyMuPDF
 import io
 import json
 import datetime
-from db import init_supabase, init_gemini
 import os
 
 # --- Configuration & Setup ---
@@ -40,20 +39,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Authentication ---
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
+from db import init_supabase, init_gemini, check_password
 
-if not st.session_state["authenticated"]:
-    st.title("🔒 Access Restricted")
-    passcode = st.text_input("Enter Passcode:", type="password")
-    if st.button("Submit"):
-        if passcode == "111020":
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect passcode.")
-    st.stop()
+check_password()
 
 GEMINI_API_KEY = init_gemini()
 supabase = init_supabase()
