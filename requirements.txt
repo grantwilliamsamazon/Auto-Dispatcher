@@ -1,7 +1,7 @@
 streamlit
 pandas
 supabase
-google-generativeai
+google-genai
 pymupdf
 openpyxl
 pillow
