@@ -66,9 +66,6 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         return None
     
     def pop_best_van(req_func, driver, prefer_func=None):
-        unassigned_count = len(df[df["van"] == ""])
-        buffer_count = len(available_vans) - unassigned_count
-        
         driver_record = get_driver_match(driver)
         restriction = driver_record.get('vehicle_restriction', None) if driver_record else None
         is_safe = driver_record.get('is_safe', False) if driver_record else False
@@ -91,14 +88,14 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 
                 v_tags = v.get("tags", [])
                 
-                # If it's a new van and we aren't allowing them yet (and we have buffer), skip
+                # If it's a new van and we aren't allowing them yet, skip
                 if "new_van" in v_tags:
                     if not is_safe: continue # Never allow unsafe drivers in new vans
-                    if not allow_new_van and buffer_count > 0: continue
+                    if not allow_new_van: continue
                     
-                # If it has no camera and we aren't allowing them yet (and we have buffer), skip
+                # If it has no camera and we aren't allowing them yet, skip
                 if "no_camera" in v_tags:
-                    if not allow_no_camera and buffer_count > 0: continue
+                    if not allow_no_camera: continue
                     
                 return i
             return -1
