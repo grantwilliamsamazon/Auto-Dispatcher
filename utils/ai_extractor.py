@@ -50,9 +50,31 @@ def extract_wave_schedule(image_file):
                 response_mime_type="application/json",
             )
         )
-        data = json.loads(response.text)
+        
+        raw_text = response.text.strip()
+        
+        # Remove markdown formatting if present
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:]
+        elif raw_text.startswith("```"):
+            raw_text = raw_text[3:]
+        if raw_text.endswith("```"):
+            raw_text = raw_text[:-3]
+            
+        raw_text = raw_text.strip()
+        
+        # Fix common JSON errors like trailing commas
+        import re
+        raw_text = re.sub(r',\s*}', '}', raw_text)
+        raw_text = re.sub(r',\s*\]', ']', raw_text)
+        
+        data = json.loads(raw_text)
         st.success("Successfully extracted wave schedule!")
         return data
     except Exception as e:
         st.error(f"Error during extraction: {e}")
+        # Show what failed to help debug
+        if 'raw_text' in locals():
+            with st.expander("Show raw AI response"):
+                st.code(raw_text)
         return None
