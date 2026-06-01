@@ -83,43 +83,52 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
             return make == res_str
 
         # Helper to search vans
-        def search_vans(enforce_buffer, enforce_prefer):
+        def search_vans(enforce_prefer, allow_no_camera, allow_new_van):
             for i, v in enumerate(available_vans):
                 if req_func and not req_func(v): continue
                 if enforce_prefer and prefer_func and not prefer_func(v): continue
                 if not passes_restriction(v): continue
                 
                 v_tags = v.get("tags", [])
-                if "new_van" in v_tags and not is_safe: continue
-                if enforce_buffer and "no_camera" in v_tags and buffer_count > 0:
-                    continue
+                
+                # If it's a new van and we aren't allowing them yet (and we have buffer), skip
+                if "new_van" in v_tags:
+                    if not is_safe: continue # Never allow unsafe drivers in new vans
+                    if not allow_new_van and buffer_count > 0: continue
+                    
+                # If it has no camera and we aren't allowing them yet (and we have buffer), skip
+                if "no_camera" in v_tags:
+                    if not allow_no_camera and buffer_count > 0: continue
+                    
                 return i
             return -1
 
-        # Pass 1: Strict (buffer + preference)
-        idx = search_vans(enforce_buffer=True, enforce_prefer=True)
-        if idx != -1:
-            if "no_camera" in available_vans[idx].get("tags", []):
-                buffer_count -= 1
-            return available_vans.pop(idx)
-            
-        # Pass 2: Drop preference, keep buffer
+        # Pass 1: Strict (prefer match, avoid no_camera, avoid new_van)
+        idx = search_vans(enforce_prefer=True, allow_no_camera=False, allow_new_van=False)
+        if idx != -1: return available_vans.pop(idx)
+        
+        # Pass 2: Drop prefer (avoid no_camera, avoid new_van)
         if prefer_func:
-            idx = search_vans(enforce_buffer=True, enforce_prefer=False)
-            if idx != -1:
-                if "no_camera" in available_vans[idx].get("tags", []):
-                    buffer_count -= 1
-                return available_vans.pop(idx)
-                
-        # Pass 3: Drop buffer, keep preference
-        idx = search_vans(enforce_buffer=False, enforce_prefer=True)
+            idx = search_vans(enforce_prefer=False, allow_no_camera=False, allow_new_van=False)
+            if idx != -1: return available_vans.pop(idx)
+            
+        # Pass 3: Allow no_camera, avoid new_van, keep prefer
+        idx = search_vans(enforce_prefer=True, allow_no_camera=True, allow_new_van=False)
         if idx != -1: return available_vans.pop(idx)
         
-        # Pass 4: Drop buffer and preference
-        idx = search_vans(enforce_buffer=False, enforce_prefer=False)
+        # Pass 4: Allow no_camera, avoid new_van, drop prefer
+        idx = search_vans(enforce_prefer=False, allow_no_camera=True, allow_new_van=False)
+        if idx != -1: return available_vans.pop(idx)
+
+        # Pass 5: Allow new_van, keep prefer
+        idx = search_vans(enforce_prefer=True, allow_no_camera=True, allow_new_van=True)
         if idx != -1: return available_vans.pop(idx)
         
-        # Third pass fallback: Drop req_func (like Heavy route requirement) but KEEP driver restriction!
+        # Pass 6: Allow new_van, drop prefer
+        idx = search_vans(enforce_prefer=False, allow_no_camera=True, allow_new_van=True)
+        if idx != -1: return available_vans.pop(idx)
+        
+        # Fallback 1: Drop req_func (like Heavy route requirement) but KEEP driver restriction!
         # This prevents a 'No ford' driver from being forced into a Ford just because it's a Heavy route.
         for i, v in enumerate(available_vans):
             if not passes_restriction(v): continue
@@ -127,7 +136,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
             if "new_van" in v_tags and not is_safe: continue
             return available_vans.pop(i)
             
-        # Fourth pass fallback: The absolute last resort, drop driver restrictions.
+        # Fallback 2: The absolute last resort, drop driver restrictions.
         for i, v in enumerate(available_vans):
             v_tags = v.get("tags", [])
             if "new_van" in v_tags and not is_safe: continue
