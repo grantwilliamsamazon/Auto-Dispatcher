@@ -125,16 +125,10 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         idx = search_vans(enforce_prefer=False, allow_no_camera=True, allow_new_van=True)
         if idx != -1: return available_vans.pop(idx)
         
-        # Fallback 1: Drop req_func (like Heavy route requirement) but KEEP driver restriction!
-        # This prevents a 'No ford' driver from being forced into a Ford just because it's a Heavy route.
+        # Fallback 1: The absolute last resort, drop driver restrictions but KEEP req_func!
+        # This prevents an AWD-required route from getting a RWD van.
         for i, v in enumerate(available_vans):
-            if not passes_restriction(v): continue
-            v_tags = v.get("tags", [])
-            if "new_van" in v_tags and not is_safe: continue
-            return available_vans.pop(i)
-            
-        # Fallback 2: The absolute last resort, drop driver restrictions.
-        for i, v in enumerate(available_vans):
+            if req_func and not req_func(v): continue
             v_tags = v.get("tags", [])
             if "new_van" in v_tags and not is_safe: continue
             return available_vans.pop(i)
