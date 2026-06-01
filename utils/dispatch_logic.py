@@ -183,7 +183,12 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 
         # 3. Heavy Routes in this wave
         for idx, row in df[(df['parsed_time'] == wave) & (df['route_id'].isin(heavy_routes)) & (df["van"] == "")].iterrows():
-            van = pop_best_van(lambda v: v.get("size_class") == 'Large', row['driver'])
+            # PREFER Large vans, but do not strictly require them, so we don't force assignment to bad vans.
+            van = pop_best_van(
+                req_func=lambda v: True, 
+                driver=row['driver'],
+                prefer_func=lambda v: v.get("size_class") == 'Large'
+            )
             if van: df.at[idx, "van"] = van["van_number"]
                 
         # 4. The Leftovers in this wave
