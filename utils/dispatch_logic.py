@@ -8,13 +8,16 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     """
     df = routes_df.copy()
     
+    # Create a local copy of available_vans to avoid mutating the caller's list
+    vans = [dict(v) for v in available_vans]
+    
     # Sort available vans numerically so they are assigned in order (1, 2, 3...)
     def get_van_sort_key(v):
         try:
             return int(v['van_number'])
         except:
             return 999
-    available_vans.sort(key=get_van_sort_key)
+    vans.sort(key=get_van_sort_key)
     
     def parse_time(time_str):
         try:
@@ -38,7 +41,13 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         return " ".join(str(name).lower().replace("-", " ").strip().split())
 
     def get_driver_match(excel_driver_name):
+        # Quick exit if driver name is empty/missing to avoid matching empty strings/NaN
+        if not excel_driver_name or pd.isna(excel_driver_name):
+            return None
         excel_norm = normalize_name(excel_driver_name)
+        if excel_norm in ["", "nan", "none", "null"]:
+            return None
+            
         excel_tokens = set(excel_norm.split())
         
         # 1. Exact match (normalized)
@@ -81,7 +90,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
 
         # Helper to search vans
         def search_vans(enforce_prefer, allow_no_camera, allow_new_van):
-            for i, v in enumerate(available_vans):
+            for i, v in enumerate(vans):
                 if req_func and not req_func(v): continue
                 if enforce_prefer and prefer_func and not prefer_func(v): continue
                 if not passes_restriction(v): continue
@@ -102,36 +111,36 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
 
         # Pass 1: Strict (prefer match, avoid no_camera, avoid new_van)
         idx = search_vans(enforce_prefer=True, allow_no_camera=False, allow_new_van=False)
-        if idx != -1: return available_vans.pop(idx)
+        if idx != -1: return vans.pop(idx)
         
         # Pass 2: Drop prefer (avoid no_camera, avoid new_van)
         if prefer_func:
             idx = search_vans(enforce_prefer=False, allow_no_camera=False, allow_new_van=False)
-            if idx != -1: return available_vans.pop(idx)
+            if idx != -1: return vans.pop(idx)
             
         # Pass 3: Allow no_camera, avoid new_van, keep prefer
         idx = search_vans(enforce_prefer=True, allow_no_camera=True, allow_new_van=False)
-        if idx != -1: return available_vans.pop(idx)
+        if idx != -1: return vans.pop(idx)
         
         # Pass 4: Allow no_camera, avoid new_van, drop prefer
         idx = search_vans(enforce_prefer=False, allow_no_camera=True, allow_new_van=False)
-        if idx != -1: return available_vans.pop(idx)
+        if idx != -1: return vans.pop(idx)
 
         # Pass 5: Allow new_van, keep prefer
         idx = search_vans(enforce_prefer=True, allow_no_camera=True, allow_new_van=True)
-        if idx != -1: return available_vans.pop(idx)
+        if idx != -1: return vans.pop(idx)
         
         # Pass 6: Allow new_van, drop prefer
         idx = search_vans(enforce_prefer=False, allow_no_camera=True, allow_new_van=True)
-        if idx != -1: return available_vans.pop(idx)
+        if idx != -1: return vans.pop(idx)
         
         # Fallback 1: The absolute last resort, drop driver restrictions but KEEP req_func!
         # This prevents an AWD-required route from getting a RWD van.
-        for i, v in enumerate(available_vans):
+        for i, v in enumerate(vans):
             if req_func and not req_func(v): continue
             v_tags = v.get("tags", [])
             if "new_van" in v_tags and not is_safe: continue
-            return available_vans.pop(i)
+            return vans.pop(i)
             
         return None
 
@@ -149,7 +158,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         except: pass
         return (get_van_tier(v), num)
         
-    sorted_vans_for_count = sorted(available_vans, key=get_van_sort_key_for_count)
+    sorted_vans_for_count = sorted(vans, key=get_van_sort_key_for_count)
     vans_to_use = sorted_vans_for_count[:len(df)]
     large_van_count = sum(1 for v in vans_to_use if v.get("size_class") == "Large")
     
@@ -201,13 +210,20 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     if "waves" in wave_data and len(wave_data["waves"]) > 0:
         debug_logs = []
         for wave in wave_data["waves"]:
-            # Make the matching robust (ignoring AM/PM and spaces)
+            # Make the matching robust (ignoring AM/PM, spaces, and leading zeros)
             raw_time = wave.get("staging_time", "")
-            w_time = str(raw_time).lower().replace("am", "").replace("pm", "").strip()
+            
+            def clean_time(t_str):
+                cleaned = str(t_str).lower().replace("am", "").replace("pm", "").replace(".", "").strip()
+                if cleaned.startswith("0") and len(cleaned) > 1:
+                    cleaned = cleaned[1:]
+                return cleaned
+                
+            w_time = clean_time(raw_time)
             
             # Find routes assigned to this exact wave time
             def match_time(val):
-                return str(val).lower().replace("am", "").replace("pm", "").strip() == w_time
+                return clean_time(val) == w_time
                 
             wave_routes = df[df["wave_time"].apply(match_time)].index
             debug_logs.append(f"Wave {wave.get('wave_number')} (Time: '{raw_time}' -> '{w_time}') matched {len(wave_routes)} routes")
