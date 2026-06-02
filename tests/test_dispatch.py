@@ -197,3 +197,44 @@ def test_mercedes_exclusive_assignment():
     
     assert driver_a_row["van"] == "1", f"Driver A (Mercedes) should get Van 1, got {driver_a_row['van']}"
     assert driver_b_row["van"] == "2", f"Driver B (unrestricted) should get Van 2, got {driver_b_row['van']}"
+
+
+def test_van_44_exclusive_assignment():
+    # Roster with:
+    # 1. Driver A (has "van 44" restriction/tag, doesn't care)
+    # 2. Driver B (unrestricted but doesn't have "van 44")
+    routes_df = pd.DataFrame([
+        {"route_id": "CX-300", "driver": "Driver B", "packages": 150, "bags": 10, "overflow": 5, "wave_time": "9:45 AM"},
+        {"route_id": "CX-301", "driver": "Driver A", "packages": 150, "bags": 10, "overflow": 5, "wave_time": "9:45 AM"},
+    ])
+    
+    # Available vans:
+    # Van 44: RAM
+    # Van 45: Ford
+    available_vans = [
+        {"van_number": "44", "make": "RAM", "size_class": "Standard", "drive_train": "FWD", "tags": []},
+        {"van_number": "45", "make": "Ford", "size_class": "Standard", "drive_train": "FWD", "tags": []},
+    ]
+    
+    drivers = [
+        {"driver_name": "Driver A", "vehicle_restriction": "van 44", "is_safe": True},
+        {"driver_name": "Driver B", "vehicle_restriction": "", "is_safe": True},
+    ]
+    
+    wave_data = {
+        "waves": [
+            {"wave_number": 1, "staging_time": "9:45 AM", "lanes": {"1": 2}}
+        ]
+    }
+    
+    tags = {}
+    
+    result_df = run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers)
+    
+    driver_a_row = result_df[result_df["driver"] == "Driver A"].iloc[0]
+    driver_b_row = result_df[result_df["driver"] == "Driver B"].iloc[0]
+    
+    # Driver B (no van 44 approval) must NOT get Van 44. They should get Van 45.
+    # Driver A (van 44 approved) can get Van 44.
+    assert driver_b_row["van"] == "45", f"Driver B should get Van 45, got {driver_b_row['van']}"
+    assert driver_a_row["van"] == "44", f"Driver A should get Van 44, got {driver_a_row['van']}"

@@ -74,19 +74,46 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 
         return None
 
-    def passes_make_restriction(v_make, driver_restriction):
-        make = str(v_make).strip().lower()
-        res_str = str(driver_restriction).strip().lower() if driver_restriction else ""
+    def clean_van_44_restriction(restriction_str):
+        if not restriction_str:
+            return "", False
+        res_str = str(restriction_str).strip().lower()
+        keywords = ["van_44", "ram_44", "van 44", "ram 44", "44"]
+        is_van_44_approved = False
+        for kw in keywords:
+            if kw in res_str:
+                is_van_44_approved = True
+                res_str = res_str.replace(kw, "")
+        # Clean up commas, spaces, etc.
+        res_str = res_str.replace(",", " ").strip()
+        return res_str, is_van_44_approved
+
+    def passes_make_restriction(v, driver_restriction):
+        make = str(v.get("make", "")).strip().lower()
+        van_num = str(v.get("van_number", "")).strip()
+        v_tags = v.get("tags", [])
         
-        # If the van is a Mercedes, the driver MUST have a Mercedes restriction
+        # 1. Determine if the van is Van 44 (or tagged as such)
+        is_van_44 = (van_num == "44") or any(
+            t in v_tags for t in ["van_44", "ram_44", "van 44", "ram 44"]
+        )
+        
+        # 2. Extract Van 44 approval and clean driver restriction
+        res_str, is_van_44_approved = clean_van_44_restriction(driver_restriction)
+        
+        # 3. If it is Van 44, the driver MUST be approved
+        if is_van_44 and not is_van_44_approved:
+            return False
+            
+        # 4. If the van is a Mercedes, the driver MUST have a Mercedes restriction
         if make == "mercedes":
             return res_str == "mercedes"
             
-        # If the driver has a Mercedes restriction, they can ONLY drive a Mercedes
+        # 5. If the driver has a Mercedes restriction, they can ONLY drive a Mercedes
         if res_str == "mercedes":
             return make == "mercedes"
             
-        # Standard restrictions
+        # 6. Apply remaining make restrictions
         if res_str == "":
             return True
         if res_str.startswith("no "):
@@ -96,7 +123,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     def is_van_compatible(v, row, driver_record):
         # 1. Check driver restriction
         restriction = driver_record.get('vehicle_restriction', None) if driver_record else None
-        if not passes_make_restriction(v.get("make", ""), restriction):
+        if not passes_make_restriction(v, restriction):
             return False
                 
         # 2. Check driver safety for new vans
@@ -122,7 +149,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         is_safe = driver_record.get('is_safe', False) if driver_record else False
         
         def passes_restriction(v):
-            return passes_make_restriction(v.get("make", ""), restriction)
+            return passes_make_restriction(v, restriction)
 
         # Helper to search vans
         def search_vans(enforce_prefer, allow_no_camera, allow_new_van):
