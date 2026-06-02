@@ -74,17 +74,30 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 
         return None
 
+    def passes_make_restriction(v_make, driver_restriction):
+        make = str(v_make).strip().lower()
+        res_str = str(driver_restriction).strip().lower() if driver_restriction else ""
+        
+        # If the van is a Mercedes, the driver MUST have a Mercedes restriction
+        if make == "mercedes":
+            return res_str == "mercedes"
+            
+        # If the driver has a Mercedes restriction, they can ONLY drive a Mercedes
+        if res_str == "mercedes":
+            return make == "mercedes"
+            
+        # Standard restrictions
+        if res_str == "":
+            return True
+        if res_str.startswith("no "):
+            return make != res_str[3:].strip()
+        return make == res_str
+
     def is_van_compatible(v, row, driver_record):
         # 1. Check driver restriction
         restriction = driver_record.get('vehicle_restriction', None) if driver_record else None
-        if restriction and str(restriction).strip() != "":
-            res_str = str(restriction).strip().lower()
-            make = str(v.get("make", "")).lower()
-            if res_str.startswith("no "):
-                if make == res_str[3:].strip():
-                    return False
-            elif make != res_str:
-                return False
+        if not passes_make_restriction(v.get("make", ""), restriction):
+            return False
                 
         # 2. Check driver safety for new vans
         is_safe = driver_record.get('is_safe', False) if driver_record else False
@@ -109,13 +122,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         is_safe = driver_record.get('is_safe', False) if driver_record else False
         
         def passes_restriction(v):
-            if not restriction or str(restriction).strip() == "":
-                return True
-            res_str = str(restriction).strip().lower()
-            make = str(v.get("make", "")).lower()
-            if res_str.startswith("no "):
-                return make != res_str[3:].strip()
-            return make == res_str
+            return passes_make_restriction(v.get("make", ""), restriction)
 
         # Helper to search vans
         def search_vans(enforce_prefer, allow_no_camera, allow_new_van):

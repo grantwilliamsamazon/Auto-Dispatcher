@@ -160,3 +160,40 @@ def test_new_van_safe_driver_swap():
     
     assert tiara_row["van"] == "1", f"Tiara should be assigned to Van 1, got {tiara_row['van']}"
     assert nicole_row["van"] == "39", f"Nicole should be assigned to Van 39, got {nicole_row['van']}"
+
+
+def test_mercedes_exclusive_assignment():
+    # Roster with Driver B first (unrestricted) then Driver A (Mercedes restriction)
+    routes_df = pd.DataFrame([
+        {"route_id": "CX-201", "driver": "Driver B", "packages": 150, "bags": 10, "overflow": 5, "wave_time": "9:45 AM"},
+        {"route_id": "CX-200", "driver": "Driver A", "packages": 150, "bags": 10, "overflow": 5, "wave_time": "9:45 AM"},
+    ])
+    
+    # Available vans:
+    # Van 1: Mercedes
+    # Van 2: Ford
+    available_vans = [
+        {"van_number": "1", "make": "Mercedes", "size_class": "Standard", "drive_train": "FWD", "tags": []},
+        {"van_number": "2", "make": "Ford", "size_class": "Standard", "drive_train": "FWD", "tags": []},
+    ]
+    
+    drivers = [
+        {"driver_name": "Driver A", "vehicle_restriction": "Mercedes", "is_safe": True},
+        {"driver_name": "Driver B", "vehicle_restriction": "", "is_safe": True},
+    ]
+    
+    wave_data = {
+        "waves": [
+            {"wave_number": 1, "staging_time": "9:45 AM", "lanes": {"1": 2}}
+        ]
+    }
+    
+    tags = {}
+    
+    result_df = run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers)
+    
+    driver_a_row = result_df[result_df["driver"] == "Driver A"].iloc[0]
+    driver_b_row = result_df[result_df["driver"] == "Driver B"].iloc[0]
+    
+    assert driver_a_row["van"] == "1", f"Driver A (Mercedes) should get Van 1, got {driver_a_row['van']}"
+    assert driver_b_row["van"] == "2", f"Driver B (unrestricted) should get Van 2, got {driver_b_row['van']}"
