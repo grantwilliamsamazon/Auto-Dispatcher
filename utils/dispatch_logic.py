@@ -73,6 +73,35 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 return d
                 
         return None
+
+    def is_van_compatible(v, row, driver_record):
+        # 1. Check driver restriction
+        restriction = driver_record.get('vehicle_restriction', None) if driver_record else None
+        if restriction and str(restriction).strip() != "":
+            res_str = str(restriction).strip().lower()
+            make = str(v.get("make", "")).lower()
+            if res_str.startswith("no "):
+                if make == res_str[3:].strip():
+                    return False
+            elif make != res_str:
+                return False
+                
+        # 2. Check driver safety for new vans
+        is_safe = driver_record.get('is_safe', False) if driver_record else False
+        v_tags = v.get("tags", [])
+        if "new_van" in v_tags and not is_safe:
+            return False
+            
+        # 3. Check route specific requirements
+        route_id = row['route_id']
+        if route_id in island_routes:
+            if "island_pass" not in v_tags:
+                return False
+        if route_id in rural_routes:
+            if v.get("drive_train") not in ['FWD', 'AWD']:
+                return False
+                
+        return True
     
     def pop_best_van(req_func, driver, prefer_func=None):
         driver_record = get_driver_match(driver)
@@ -203,6 +232,40 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 prefer_func=lambda v: v.get("size_class") == "Standard"
             )
             if van: df.at[idx, "van"] = van["van_number"]
+
+    # 5. Resolve greedy-assignment conflicts where safe drivers took standard vans,
+    # leaving unsafe drivers with only new/restricted vans.
+    unassigned_indices = df[df["van"] == ""].index.tolist()
+    if unassigned_indices and vans:
+        all_vans_lookup = {v["van_number"]: v for v in available_vans}
+        for idx_unassigned in unassigned_indices:
+            row_unassigned = df.loc[idx_unassigned]
+            driver_unassigned = row_unassigned['driver']
+            driver_unassigned_record = get_driver_match(driver_unassigned)
+            
+            for i_v, v_avail in enumerate(vans):
+                swap_found = False
+                for idx_assigned, row_assigned in df[df["van"] != ""].iterrows():
+                    v_assigned_num = row_assigned["van"]
+                    v_assigned = all_vans_lookup.get(v_assigned_num)
+                    if not v_assigned:
+                        continue
+                        
+                    driver_assigned = row_assigned['driver']
+                    driver_assigned_record = get_driver_match(driver_assigned)
+                    
+                    if is_van_compatible(v_avail, row_assigned, driver_assigned_record) and \
+                       is_van_compatible(v_assigned, row_unassigned, driver_unassigned_record):
+                        # Perform swap!
+                        df.at[idx_assigned, "van"] = v_avail["van_number"]
+                        df.at[idx_unassigned, "van"] = v_assigned["van_number"]
+                        
+                        # Remove v_avail from the available pool
+                        vans.pop(i_v)
+                        swap_found = True
+                        break
+                if swap_found:
+                    break
             
     df = df.drop(columns=['parsed_time'])
             

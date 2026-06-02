@@ -118,3 +118,45 @@ def test_run_dispatch_algorithm_full_scale():
         van_str = str(row["van"]).split(".")[0]
         van = next((v for v in original_vans if v["van_number"] == van_str), None)
         assert van["make"].lower() != "ford", f"Driver {row['driver']} with No Ford restriction got a Ford"
+
+
+def test_new_van_safe_driver_swap():
+    # Roster with:
+    # 1. Nicole (is_safe = True)
+    # 2. Tiara (is_safe = False)
+    routes_df = pd.DataFrame([
+        {"route_id": "CX-100", "driver": "Nicole", "packages": 150, "bags": 10, "overflow": 5, "wave_time": "9:45 AM"},
+        {"route_id": "CX-101", "driver": "Tiara", "packages": 150, "bags": 10, "overflow": 5, "wave_time": "9:45 AM"},
+    ])
+    
+    # Available vans:
+    # Van 1: Standard
+    # Van 39: New Van (tagged 'new_van')
+    available_vans = [
+        {"van_number": "1", "make": "Ford", "size_class": "Standard", "drive_train": "FWD", "tags": []},
+        {"van_number": "39", "make": "Ford", "size_class": "Standard", "drive_train": "FWD", "tags": ["new_van"]},
+    ]
+    
+    drivers = [
+        {"driver_name": "Nicole", "vehicle_restriction": "", "is_safe": True},
+        {"driver_name": "Tiara", "vehicle_restriction": "", "is_safe": False},
+    ]
+    
+    wave_data = {
+        "waves": [
+            {"wave_number": 1, "staging_time": "9:45 AM", "lanes": {"1": 2}}
+        ]
+    }
+    
+    tags = {}
+    
+    result_df = run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers)
+    
+    # Assertions
+    # Tiara should get Van 1 (the standard van)
+    # Nicole should get Van 39 (the new van)
+    tiara_row = result_df[result_df["driver"] == "Tiara"].iloc[0]
+    nicole_row = result_df[result_df["driver"] == "Nicole"].iloc[0]
+    
+    assert tiara_row["van"] == "1", f"Tiara should be assigned to Van 1, got {tiara_row['van']}"
+    assert nicole_row["van"] == "39", f"Nicole should be assigned to Van 39, got {nicole_row['van']}"
