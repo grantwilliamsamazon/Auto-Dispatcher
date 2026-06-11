@@ -11,6 +11,12 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     # Create a local copy of available_vans to avoid mutating the caller's list
     vans = [dict(v) for v in available_vans]
     
+    def get_safe_tags(v):
+        t = v.get("tags")
+        if isinstance(t, list): return t
+        if isinstance(t, str): return [x.strip() for x in t.split(',')]
+        return []
+    
     # Sort available vans numerically so they are assigned in order (1, 2, 3...)
     def get_van_sort_key(v):
         try:
@@ -91,7 +97,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     def passes_make_restriction(v, driver_restriction):
         make = str(v.get("make", "")).strip().lower()
         van_num = str(v.get("van_number", "")).strip()
-        v_tags = v.get("tags", [])
+        v_tags = get_safe_tags(v)
         
         # 1. Determine if the van is Van 44 (or tagged as such)
         is_van_44 = (van_num == "44") or any(
@@ -128,7 +134,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 
         # 2. Check driver safety for new vans
         is_safe = driver_record.get('is_safe', False) if driver_record else False
-        v_tags = v.get("tags", [])
+        v_tags = get_safe_tags(v)
         if "new_van" in v_tags and not is_safe:
             return False
             
@@ -158,7 +164,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 if enforce_prefer and prefer_func and not prefer_func(v): continue
                 if not passes_restriction(v): continue
                 
-                v_tags = v.get("tags", [])
+                v_tags = get_safe_tags(v)
                 
                 # If it's a new van and we aren't allowing them yet, skip
                 if "new_van" in v_tags:
@@ -201,7 +207,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
         # This prevents an AWD-required route from getting a RWD van.
         for i, v in enumerate(vans):
             if req_func and not req_func(v): continue
-            v_tags = v.get("tags", [])
+            v_tags = get_safe_tags(v)
             if "new_van" in v_tags and not is_safe: continue
             return vans.pop(i)
             
@@ -210,7 +216,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     # Pre-calculate heavy routes globally
     # Only force Heavy Routes if we actually plan to use Large vans (excluding bad ones if we have enough buffer)
     def get_van_tier(v):
-        tags = v.get("tags", [])
+        tags = get_safe_tags(v)
         if "new_van" in tags: return 2
         if "no_camera" in tags: return 1
         return 0
@@ -234,7 +240,7 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     for wave in unique_waves:
         # 1. Island Routes in this wave
         for idx, row in df[(df['parsed_time'] == wave) & (df['route_id'].isin(island_routes)) & (df["van"] == "")].iterrows():
-            van = pop_best_van(lambda v: "island_pass" in v.get("tags", []), row['driver'])
+            van = pop_best_van(lambda v: "island_pass" in get_safe_tags(v), row['driver'])
             if van: df.at[idx, "van"] = van["van_number"]
                     
         # 2. Rural/Dirt Routes in this wave
