@@ -307,28 +307,15 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
                 if swap_found:
                     break
             
-    df = df.drop(columns=['parsed_time'])
-            
     # Phase 3: Immutable Wave & Lane Parking
     if "waves" in wave_data and len(wave_data["waves"]) > 0:
         debug_logs = []
         for wave in wave_data["waves"]:
-            # Make the matching robust (ignoring AM/PM, spaces, and leading zeros)
             raw_time = wave.get("staging_time", "")
-            
-            def clean_time(t_str):
-                cleaned = str(t_str).lower().replace("am", "").replace("pm", "").replace(".", "").strip()
-                if cleaned.startswith("0") and len(cleaned) > 1:
-                    cleaned = cleaned[1:]
-                return cleaned
-                
-            w_time = clean_time(raw_time)
+            w_time = parse_time(raw_time)
             
             # Find routes assigned to this exact wave time
-            def match_time(val):
-                return clean_time(val) == w_time
-                
-            wave_routes = df[df["wave_time"].apply(match_time)].index
+            wave_routes = df[df["parsed_time"] == w_time].index
             debug_logs.append(f"Wave {wave.get('wave_number')} (Time: '{raw_time}' -> '{w_time}') matched {len(wave_routes)} routes")
             
             lanes = wave.get("lanes", {})
@@ -345,5 +332,6 @@ def run_dispatch_algorithm(routes_df, wave_data, tags, available_vans, drivers):
     else:
         st.warning("⚠️ No Wave/Lane data was found! Did you forget to click 'Extract Wave Schedule' in Step 2 before running the algorithm?")
         
+    df = df.drop(columns=['parsed_time'])
     st.success("Auto-Assign Algorithm Completed Successfully!")
     return df

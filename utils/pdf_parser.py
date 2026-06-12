@@ -36,10 +36,9 @@ def extract_pdf_data(route_sheet_pdf, cortex_excel):
             continue
             
         route_id = lines[1]
-        wave_line = lines[3]
         
-        # Extract wave time (e.g., 10:45 AM or 10:45 a.m.)
-        time_match = re.search(r'(\d{1,2}:\d{2}\s*(?:[ap]\.?\s*m\.?))', wave_line, re.IGNORECASE)
+        # Extract wave time (e.g., 10:45 AM or 10:45 a.m.) from anywhere on the page
+        time_match = re.search(r'(\d{1,2}:\d{2}\s*(?:[ap]\.?\s*m\.?))', text, re.IGNORECASE)
         wave_time = time_match.group(1).upper().replace(".", "") if time_match else "Unknown"
         
         bags = 0
